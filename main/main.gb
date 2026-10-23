@@ -1,0 +1,1369 @@
+extends Node2D
+
+const MAP_SIZE := Vector2(1400, 900)
+const CENTER := Vector2(700, 450)
+const SHOP_POS := Vector2(700, 555)
+
+const SOLDIER_SPEED := 90.0
+const TOWER_RANGE := 230.0
+const INFANTRY_RANGE := 100.0
+const ARCHER_RANGE := 250.0
+const INFANTRY_DAMAGE := 20
+const ARCHER_DAMAGE := 12
+const INFANTRY_ATTACK_DELAY := 0.65
+const ARCHER_ATTACK_DELAY := 0.48
+const HERO_RESPAWN_TIME := 4.0
+const SOLDIER_ATTACK_DELAY := 0.8
+const BASE_ATTACK_RANGE := 65.0
+
+var heroes: Array = []
+var soldiers: Array = []
+var teams: Array = []
+var towers: Array = []
+var effects: Array = []
+
+var player_pos := Vector2(145, 135)
+var player_gold := 150
+var player_level := 1
+var player_xp := 0
+var player_hp := 200
+var player_max_hp := 200
+var player_damage := INFANTRY_DAMAGE
+var player_armor := 0.0
+var player_speed := 230.0
+var player_respawn_timer := 0.0
+var player_alive := true
+
+var attack_cooldown := 0.0
+var spawn_timer := 0.0
+var economy_timer := 0.0
+var bot_timer := 0.0
+
+var game_over := false
+var winner_team := -1
+var shop_open := false
+var hero_selection_open := true
+var selected_hero_type := "infantry"
+
+var command_mode := false
+var squad_target := Vector2.ZERO
+var squad_has_target := false
+
+var screen_scale := 1.0
+var screen_offset := Vector2.ZERO
+
+var shop_rect := Rect2(300, 80, 800, 740)
+var command_button_rect := Rect2(20, 180, 190, 42)
+
+var selected_unit: Dictionary = {}
+
+var base_positions: Array = [
+	Vector2(100, 100),
+	Vector2(1300, 100),
+	Vector2(100, 800),
+	Vector2(1300, 800)
+]
+
+var team_colors: Array = [
+	Color(0.2, 0.55, 1.0),
+	Color(1.0, 0.25, 0.2),
+	Color(0.25, 0.85, 0.35),
+	Color(1.0, 0.75, 0.15)
+]
+
+var shop_items: Array = [
+	{"name": "Урон героя +8", "description": "Увеличивает урон героя", "price": 100, "key": "damage"},
+	{"name": "Здоровье +50", "description": "Увеличивает максимум здоровья", "price": 120, "key": "health"},
+	{"name": "Скорость +15%", "description": "Герой движется быстрее", "price": 100, "key": "speed"},
+	{"name": "Броня +10%", "description": "Снижает входящий урон", "price": 150, "key": "armor"},
+	{"name": "Улучшить базу", "description": "Усиливает базу и солдат", "price": 250, "key": "base"},
+	{"name": "Урон башен +5", "description": "Увеличивает урон башен", "price": 150, "key": "tower_damage"},
+	{"name": "Дальность башен +35", "description": "Увеличивает радиус башен", "price": 150, "key": "tower_range"},
+	{"name": "Дальность лучника +30", "description": "Увеличивает дальность лучника", "price": 150, "key": "archer_range"}
+]
+
+
+func _ready() -> void:
+	get_window().title = "MyRTS"
+	randomize()
+	_initialize_game()
+
+
+func _initialize_game() -> void:
+	teams.clear()
+	heroes.clear()
+	soldiers.clear()
+	towers.clear()
+	effects.clear()
+	selected_unit.clear()
+
+	for i in range(4):
+		teams.append({
+			"hp": 1000,
+			"max_hp": 1000,
+			"gold": 150,
+			"xp": 0,
+			"level": 1,
+			"base_level": 1,
+			"damage": 15,
+			"alive": true
+		})
+
+		heroes.append({
+			"team": i,
+			"pos": base_positions[i] + Vector2(45, 35),
+			"hp": 200,
+			"max_hp": 200,
+			"damage": INFANTRY_DAMAGE,
+			"speed": 165.0,
+			"attack_timer": 0.0,
+			"hero_type": "infantry",
+			"attack_range": INFANTRY_RANGE,
+			"attack_delay": INFANTRY_ATTACK_DELAY,
+			"alive": true,
+			"respawn": 0.0,
+			"level": 1,
+			"xp": 0,
+			"kills": 0,
+			"attack_flash": 0.0
+		})
+
+		for offset in [
+			Vector2(-48, -45),
+			Vector2(48, -45),
+			Vector2(0, 52)
+		]:
+			towers.append({
+				"team": i,
+				"pos": base_positions[i] + offset,
+				"hp": 250,
+				"max_hp": 250,
+				"damage": 20,
+				"range": TOWER_RANGE,
+				"timer": randf_range(0.0, 0.8)
+			})
+
+	_set_hero_type(0, "infantry")
+
+	for i in range(1, 4):
+		_set_hero_type(i, "archer" if randi() % 2 == 0 else "infantry")
+
+	player_pos = base_positions[0] + Vector2(45, 35)
+	player_gold = 150
+	player_level = 1
+	player_xp = 0
+	player_hp = 200
+	player_max_hp = 200
+	player_damage = INFANTRY_DAMAGE
+	player_armor = 0.0
+	player_speed = 230.0
+	player_alive = true
+	player_respawn_timer = 0.0
+
+	attack_cooldown = 0.0
+	spawn_timer = 0.0
+	economy_timer = 0.0
+	bot_timer = 0.0
+
+	game_over = false
+	winner_team = -1
+	shop_open = false
+	hero_selection_open = true
+	command_mode = false
+	squad_has_target = false
+
+
+func _set_hero_type(team_id: int, hero_type: String) -> void:
+	if team_id < 0 or team_id >= heroes.size():
+		return
+
+	var h: Dictionary = heroes[team_id]
+	h["hero_type"] = hero_type
+
+	if hero_type == "archer":
+		h["damage"] = ARCHER_DAMAGE
+		h["attack_range"] = ARCHER_RANGE
+		h["attack_delay"] = ARCHER_ATTACK_DELAY
+	else:
+		h["damage"] = INFANTRY_DAMAGE
+		h["attack_range"] = INFANTRY_RANGE
+		h["attack_delay"] = INFANTRY_ATTACK_DELAY
+
+	heroes[team_id] = h
+
+	if team_id == 0:
+		selected_hero_type = hero_type
+		player_damage = int(h["damage"])
+
+
+func _process(delta: float) -> void:
+	_update_effects(delta)
+
+	if game_over or hero_selection_open:
+		queue_redraw()
+		return
+
+	attack_cooldown = maxf(0.0, attack_cooldown - delta)
+
+	if player_alive:
+		if not shop_open:
+			_update_player(delta)
+	else:
+		player_respawn_timer -= delta
+		if player_respawn_timer <= 0.0:
+			_respawn_player()
+
+	heroes[0]["pos"] = player_pos
+	heroes[0]["hp"] = player_hp
+	heroes[0]["max_hp"] = player_max_hp
+	heroes[0]["damage"] = player_damage
+	heroes[0]["alive"] = player_alive
+	heroes[0]["level"] = player_level
+	heroes[0]["xp"] = player_xp
+
+	_update_soldiers(delta)
+	_update_bots(delta)
+	_update_towers(delta)
+	_update_bases(delta)
+
+	spawn_timer += delta
+	economy_timer += delta
+	bot_timer += delta
+
+	if spawn_timer >= 3.0:
+		spawn_timer = 0.0
+		_spawn_soldiers()
+
+	if economy_timer >= 3.0:
+		economy_timer = 0.0
+
+		if teams[0]["alive"]:
+			player_gold += 12
+
+		for i in range(1, 4):
+			if teams[i]["alive"]:
+				teams[i]["gold"] += 12
+				_level_up_bot(i)
+
+	if bot_timer >= 4.0:
+		bot_timer = 0.0
+		_bot_buy_upgrades()
+
+	_check_game_state()
+	queue_redraw()
+
+
+func _update_effects(delta: float) -> void:
+	for i in range(effects.size() - 1, -1, -1):
+		effects[i]["time"] -= delta
+		if float(effects[i]["time"]) <= 0.0:
+			effects.remove_at(i)
+
+
+func _add_effect(from_pos: Vector2, to_pos: Vector2, kind: String, color: Color) -> void:
+	effects.append({
+		"from": from_pos,
+		"to": to_pos,
+		"kind": kind,
+		"color": color,
+		"time": 0.22,
+		"duration": 0.22
+	})
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_R:
+			_initialize_game()
+			queue_redraw()
+			return
+
+	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			var map_mouse: Vector2 = (event.position - screen_offset) / screen_scale
+
+			if game_over:
+				if Rect2(550, 440, 300, 60).has_point(map_mouse):
+					_initialize_game()
+				return
+
+			if hero_selection_open:
+				if Rect2(440, 350, 230, 100).has_point(map_mouse):
+					_set_hero_type(0, "infantry")
+					hero_selection_open = false
+				elif Rect2(730, 350, 230, 100).has_point(map_mouse):
+					_set_hero_type(0, "archer")
+					hero_selection_open = false
+				queue_redraw()
+				return
+
+			if shop_open:
+				_handle_shop_click(map_mouse)
+				queue_redraw()
+				return
+
+			if command_button_rect.has_point(map_mouse):
+				command_mode = true
+				queue_redraw()
+				return
+
+			if command_mode:
+				squad_target = Vector2(
+					clampf(map_mouse.x, 25.0, MAP_SIZE.x - 25.0),
+					clampf(map_mouse.y, 25.0, MAP_SIZE.y - 25.0)
+				)
+				squad_has_target = true
+				command_mode = false
+				queue_redraw()
+				return
+
+			if _shop_contains(map_mouse):
+				shop_open = true
+				queue_redraw()
+				return
+
+			_select_unit_at(map_mouse)
+			queue_redraw()
+
+	if event is InputEventKey and event.pressed and not event.echo:
+		if game_over:
+			return
+
+		if hero_selection_open:
+			if event.keycode == KEY_1:
+				_set_hero_type(0, "infantry")
+				hero_selection_open = false
+			elif event.keycode == KEY_2:
+				_set_hero_type(0, "archer")
+				hero_selection_open = false
+
+		elif event.keycode == KEY_ESCAPE:
+			if shop_open:
+				shop_open = false
+			elif command_mode:
+				command_mode = false
+
+		elif event.keycode == KEY_E and not shop_open:
+			if player_alive and player_pos.distance_to(SHOP_POS) < 120.0:
+				shop_open = true
+
+		elif shop_open:
+			if event.keycode >= KEY_1 and event.keycode <= KEY_8:
+				_buy_item(int(event.keycode - KEY_1))
+
+		queue_redraw()
+
+
+func _select_unit_at(pos: Vector2) -> void:
+	selected_unit.clear()
+
+	for i in range(4):
+		var hp: float = float(player_hp) if i == 0 else float(heroes[i]["hp"])
+		var hero_pos: Vector2 = player_pos if i == 0 else heroes[i]["pos"]
+		var alive: bool = player_alive if i == 0 else bool(heroes[i]["alive"])
+
+		if alive and hero_pos.distance_to(pos) < 25.0:
+			selected_unit = {"type": "hero", "index": i}
+			return
+
+	for i in range(soldiers.size()):
+		if soldiers[i]["pos"].distance_to(pos) < 16.0:
+			selected_unit = {"type": "soldier", "index": i}
+			return
+
+	for i in range(towers.size()):
+		if towers[i]["pos"].distance_to(pos) < 20.0:
+			selected_unit = {"type": "tower", "index": i}
+			return
+
+	for i in range(4):
+		if base_positions[i].distance_to(pos) < 45.0:
+			selected_unit = {"type": "base", "index": i}
+			return
+
+
+func _shop_contains(p: Vector2) -> bool:
+	return Rect2(SHOP_POS - Vector2(58, 70), Vector2(116, 110)).has_point(p)
+
+
+func _handle_shop_click(p: Vector2) -> void:
+	var close_rect := Rect2(shop_rect.end - Vector2(55, 48), Vector2(40, 36))
+
+	if close_rect.has_point(p):
+		shop_open = false
+		return
+
+	for i in range(shop_items.size()):
+		var y: float = shop_rect.position.y + 85 + i * 73
+		var button_rect := Rect2(shop_rect.position.x + 595, y + 7, 165, 48)
+
+		if button_rect.has_point(p):
+			_buy_item(i)
+			return
+
+	if not shop_rect.has_point(p):
+		shop_open = false
+
+
+func _buy_item(index: int) -> void:
+	if index < 0 or index >= shop_items.size() or not player_alive:
+		return
+
+	var item: Dictionary = shop_items[index]
+	var key: String = str(item["key"])
+	var price: int = int(item["price"])
+
+	if key == "base":
+		price = 250 * int(teams[0]["base_level"])
+
+	if key == "archer_range" and selected_hero_type != "archer":
+		return
+
+	if player_gold < price:
+		return
+
+	player_gold -= price
+
+	match key:
+		"damage":
+			player_damage += 8
+			heroes[0]["damage"] = player_damage
+
+		"health":
+			player_max_hp += 50
+			player_hp = mini(player_hp + 50, player_max_hp)
+			heroes[0]["max_hp"] = player_max_hp
+
+		"speed":
+			player_speed *= 1.15
+
+		"armor":
+			player_armor = minf(0.75, player_armor + 0.10)
+
+		"base":
+			_upgrade_base(0)
+
+		"tower_damage":
+			for i in range(towers.size()):
+				if int(towers[i]["team"]) == 0:
+					towers[i]["damage"] = int(towers[i]["damage"]) + 5
+
+		"tower_range":
+			for i in range(towers.size()):
+				if int(towers[i]["team"]) == 0:
+					towers[i]["range"] = float(towers[i]["range"]) + 35.0
+
+		"archer_range":
+			heroes[0]["attack_range"] = float(heroes[0]["attack_range"]) + 30.0
+
+	queue_redraw()
+
+
+func _upgrade_base(team_id: int) -> void:
+	if team_id < 0 or team_id >= teams.size():
+		return
+
+	var level: int = int(teams[team_id]["base_level"])
+
+	teams[team_id]["base_level"] = level + 1
+	teams[team_id]["max_hp"] += 300
+	teams[team_id]["hp"] = min(
+		int(teams[team_id]["max_hp"]),
+		int(teams[team_id]["hp"]) + 300
+	)
+	teams[team_id]["damage"] += 5
+
+	for i in range(towers.size()):
+		if int(towers[i]["team"]) == team_id:
+			towers[i]["max_hp"] += 50
+			towers[i]["hp"] = min(
+				int(towers[i]["hp"]) + 50,
+				int(towers[i]["max_hp"])
+			)
+			towers[i]["damage"] = int(towers[i]["damage"]) + 2
+
+
+func _update_player(delta: float) -> void:
+	if not player_alive:
+		return
+
+	var direction := Vector2.ZERO
+
+	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+		direction.y -= 1.0
+	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+		direction.y += 1.0
+	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+		direction.x -= 1.0
+	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		direction.x += 1.0
+
+	if direction.length() > 0.0:
+		player_pos += direction.normalized() * player_speed * delta
+
+	player_pos.x = clampf(player_pos.x, 25.0, MAP_SIZE.x - 25.0)
+	player_pos.y = clampf(player_pos.y, 25.0, MAP_SIZE.y - 25.0)
+
+	# Автоатака: Enter больше не требуется.
+	if attack_cooldown <= 0.0:
+		_player_attack()
+		attack_cooldown = float(heroes[0]["attack_delay"])
+
+
+func _player_attack() -> void:
+	if not player_alive:
+		return
+
+	var target: Dictionary = _find_nearest_enemy(
+		player_pos, float(heroes[0]["attack_range"]), true, 0
+	)
+
+	if target.is_empty():
+		return
+
+	var target_pos: Vector2 = _target_position(target)
+	var kind := "arrow" if selected_hero_type == "archer" else "swing"
+	_add_effect(player_pos, target_pos, kind, team_colors[0])
+
+	var damage := _get_player_damage()
+
+	match str(target["type"]):
+		"hero":
+			var idx: int = int(target["index"])
+			if bool(heroes[idx]["alive"]):
+				heroes[idx]["hp"] = int(heroes[idx]["hp"]) - damage
+				if int(heroes[idx]["hp"]) <= 0:
+					_kill_bot_hero(idx, 0)
+
+		"soldier":
+			var idx: int = int(target["index"])
+			if idx >= 0 and idx < soldiers.size():
+				soldiers[idx]["hp"] = int(soldiers[idx]["hp"]) - damage
+				if int(soldiers[idx]["hp"]) <= 0:
+					soldiers.remove_at(idx)
+					player_gold += 10
+					heroes[0]["kills"] = int(heroes[0]["kills"]) + 1
+					_gain_player_xp(15)
+
+		"base":
+			_damage_base(int(target["index"]), damage, 0)
+
+
+func _get_player_damage() -> int:
+	return player_damage + (player_level - 1) * 4
+
+
+func _gain_player_xp(amount: int) -> void:
+	player_xp += amount
+
+	while player_xp >= player_level * 100:
+		player_xp -= player_level * 100
+		player_level += 1
+		player_max_hp += 25
+		player_hp = mini(player_hp + 25, player_max_hp)
+		player_damage += 4
+		heroes[0]["damage"] = player_damage
+		_add_effect(player_pos, player_pos + Vector2(0, -50), "levelup", Color.GOLD)
+
+
+func _respawn_player() -> void:
+	if not teams[0]["alive"]:
+		return
+
+	player_alive = true
+	player_hp = player_max_hp
+	player_pos = base_positions[0] + Vector2(45, 35)
+	heroes[0]["pos"] = player_pos
+	heroes[0]["hp"] = player_hp
+	heroes[0]["alive"] = true
+	heroes[0]["respawn"] = 0.0
+	attack_cooldown = 0.0
+
+
+func _kill_player() -> void:
+	if not player_alive:
+		return
+
+	player_alive = false
+	player_hp = 0
+	player_respawn_timer = HERO_RESPAWN_TIME
+	heroes[0]["alive"] = false
+	heroes[0]["hp"] = 0
+	_add_effect(player_pos, player_pos, "death", Color.WHITE)
+
+
+func _spawn_soldiers() -> void:
+	for team_id in range(4):
+		if not teams[team_id]["alive"]:
+			continue
+
+		var base_level: int = int(teams[team_id]["base_level"])
+
+		for n in range(2):
+			var offset := Vector2(
+				randf_range(-25.0, 25.0),
+				randf_range(-25.0, 25.0)
+			)
+			var max_hp: int = 55 + (base_level - 1) * 25
+			var damage: int = 8 + int(teams[team_id]["level"]) + (base_level - 1) * 5
+
+			soldiers.append({
+				"team": team_id,
+				"pos": base_positions[team_id] + Vector2(65, 55) + offset,
+				"hp": max_hp,
+				"max_hp": max_hp,
+				"damage": damage,
+				"attack_timer": randf_range(0.0, 0.5),
+				"attack_flash": 0.0
+			})
+
+
+func _update_soldiers(delta: float) -> void:
+	for i in range(soldiers.size()):
+		var s: Dictionary = soldiers[i]
+		s["attack_timer"] = maxf(0.0, float(s["attack_timer"]) - delta)
+		s["attack_flash"] = maxf(0.0, float(s["attack_flash"]) - delta)
+
+		var pos: Vector2 = s["pos"]
+		var team_id: int = int(s["team"])
+		var target := _find_nearest_enemy(pos, 95.0, true, team_id)
+
+		if target.is_empty():
+			var enemy_base := _nearest_enemy_base(pos, team_id)
+			if enemy_base >= 0:
+				var base_pos: Vector2 = base_positions[enemy_base]
+				if pos.distance_to(base_pos) <= BASE_ATTACK_RANGE:
+					if float(s["attack_timer"]) <= 0.0:
+						_damage_base(enemy_base, int(s["damage"]), team_id)
+						s["attack_timer"] = SOLDIER_ATTACK_DELAY
+						_add_effect(pos, base_pos, "swing", team_colors[team_id])
+				else:
+					s["pos"] = pos.move_toward(base_pos, SOLDIER_SPEED * delta)
+			elif team_id == 0 and squad_has_target:
+				s["pos"] = pos.move_toward(squad_target, SOLDIER_SPEED * delta)
+
+		elif float(s["attack_timer"]) <= 0.0:
+			_add_effect(pos, _target_position(target), "swing", team_colors[team_id])
+			_apply_unit_attack(target, int(s["damage"]), team_id)
+			s["attack_timer"] = SOLDIER_ATTACK_DELAY
+
+		var new_pos: Vector2 = s["pos"]
+		new_pos.x = clampf(new_pos.x, 15.0, MAP_SIZE.x - 15.0)
+		new_pos.y = clampf(new_pos.y, 15.0, MAP_SIZE.y - 15.0)
+		s["pos"] = new_pos
+		soldiers[i] = s
+
+	for i in range(soldiers.size() - 1, -1, -1):
+		if int(soldiers[i]["hp"]) <= 0:
+			soldiers.remove_at(i)
+
+
+func _update_bots(delta: float) -> void:
+	for i in range(1, 4):
+		if not teams[i]["alive"]:
+			continue
+
+		var h: Dictionary = heroes[i]
+
+		if not bool(h["alive"]):
+			h["respawn"] = float(h["respawn"]) - delta
+			if float(h["respawn"]) <= 0.0:
+				h["alive"] = true
+				h["hp"] = h["max_hp"]
+				h["pos"] = base_positions[i] + Vector2(45, 35)
+				h["attack_timer"] = 0.0
+			heroes[i] = h
+			continue
+
+		h["attack_timer"] = maxf(0.0, float(h["attack_timer"]) - delta)
+		h["attack_flash"] = maxf(0.0, float(h["attack_flash"]) - delta)
+
+		var pos: Vector2 = h["pos"]
+		var target := _find_nearest_enemy(pos, float(h["attack_range"]), true, i)
+
+		if target.is_empty():
+			var enemy_base := _nearest_enemy_base(pos, i)
+			if enemy_base >= 0:
+				var base_pos: Vector2 = base_positions[enemy_base]
+				if pos.distance_to(base_pos) <= BASE_ATTACK_RANGE:
+					if float(h["attack_timer"]) <= 0.0:
+						_add_effect(
+							pos, base_pos,
+							"arrow" if str(h["hero_type"]) == "archer" else "swing",
+							team_colors[i]
+						)
+						_damage_base(enemy_base, int(h["damage"]), i)
+						h["attack_timer"] = float(h["attack_delay"])
+				else:
+					h["pos"] = pos.move_toward(base_pos, float(h["speed"]) * delta)
+		elif float(h["attack_timer"]) <= 0.0:
+			_add_effect(
+				pos, _target_position(target),
+				"arrow" if str(h["hero_type"]) == "archer" else "swing",
+				team_colors[i]
+			)
+			_apply_unit_attack(target, int(h["damage"]), i)
+			h["attack_timer"] = float(h["attack_delay"])
+
+		heroes[i] = h
+
+
+func _apply_unit_attack(target: Dictionary, damage: int, attacker_team: int) -> void:
+	if target.is_empty():
+		return
+
+	match str(target["type"]):
+		"hero":
+			var idx: int = int(target["index"])
+			if idx == 0:
+				if player_alive:
+					player_hp -= maxi(1, int(float(damage) * (1.0 - player_armor)))
+					heroes[0]["hp"] = player_hp
+					if player_hp <= 0:
+						_kill_player()
+			elif bool(heroes[idx]["alive"]):
+				heroes[idx]["hp"] = int(heroes[idx]["hp"]) - damage
+				if int(heroes[idx]["hp"]) <= 0:
+					_kill_bot_hero(idx, attacker_team)
+
+		"soldier":
+			var idx: int = int(target["index"])
+			if idx >= 0 and idx < soldiers.size():
+				soldiers[idx]["hp"] = int(soldiers[idx]["hp"]) - damage
+				if int(soldiers[idx]["hp"]) <= 0:
+					# Опыт получают только герои за убийства.
+					if attacker_team == 0:
+						player_gold += 10
+						heroes[0]["kills"] = int(heroes[0]["kills"]) + 1
+						_gain_player_xp(15)
+					elif attacker_team > 0:
+						teams[attacker_team]["gold"] += 10
+						teams[attacker_team]["xp"] += 15
+
+		"base":
+			_damage_base(int(target["index"]), damage, attacker_team)
+
+
+func _kill_bot_hero(victim: int, attacker_team: int) -> void:
+	if victim <= 0 or victim >= heroes.size():
+		return
+	if not bool(heroes[victim]["alive"]):
+		return
+
+	heroes[victim]["alive"] = false
+	heroes[victim]["hp"] = 0
+	heroes[victim]["respawn"] = HERO_RESPAWN_TIME
+	heroes[victim]["pos"] = base_positions[victim] + Vector2(45, 35)
+
+	if attacker_team == 0:
+		player_gold += 35
+		heroes[0]["kills"] = int(heroes[0]["kills"]) + 1
+		_gain_player_xp(50)
+	elif attacker_team > 0:
+		teams[attacker_team]["gold"] += 35
+		teams[attacker_team]["xp"] += 50
+
+
+func _nearest_enemy_base(pos: Vector2, own_team: int) -> int:
+	var best := -1
+	var best_distance := INF
+
+	for i in range(4):
+		if i == own_team or not bool(teams[i]["alive"]):
+			continue
+
+		var d: float = pos.distance_to(base_positions[i])
+		if d < best_distance:
+			best_distance = d
+			best = i
+
+	return best
+
+
+func _target_position(target: Dictionary) -> Vector2:
+	match str(target["type"]):
+		"hero":
+			var idx: int = int(target["index"])
+			return player_pos if idx == 0 else heroes[idx]["pos"]
+		"soldier":
+			var idx: int = int(target["index"])
+			if idx >= 0 and idx < soldiers.size():
+				return soldiers[idx]["pos"]
+		"base":
+			return base_positions[int(target["index"])]
+
+	return CENTER
+
+
+func _update_towers(delta: float) -> void:
+	for ti in range(towers.size()):
+		towers[ti]["timer"] = maxf(0.0, float(towers[ti]["timer"]) - delta)
+		if float(towers[ti]["timer"]) > 0.0:
+			continue
+
+		var team_id: int = int(towers[ti]["team"])
+		var tower_pos: Vector2 = towers[ti]["pos"]
+		var tower_range: float = float(towers[ti]["range"])
+		var tower_damage: int = int(towers[ti]["damage"])
+		var target_type := ""
+		var target_index := -1
+		var best_distance: float = tower_range
+
+		for i in range(soldiers.size()):
+			if int(soldiers[i]["team"]) == team_id:
+				continue
+
+			var d: float = tower_pos.distance_to(soldiers[i]["pos"])
+			if d < best_distance:
+				best_distance = d
+				target_type = "soldier"
+				target_index = i
+
+		for i in range(4):
+			if i == team_id or not bool(teams[i]["alive"]):
+				continue
+			if i == 0 and not player_alive:
+				continue
+			if i > 0 and not bool(heroes[i]["alive"]):
+				continue
+
+			var hero_pos: Vector2 = player_pos if i == 0 else heroes[i]["pos"]
+			var d: float = tower_pos.distance_to(hero_pos)
+			if d < best_distance:
+				best_distance = d
+				target_type = "hero"
+				target_index = i
+
+		if target_index >= 0:
+			if target_type == "soldier":
+				if target_index < soldiers.size():
+					soldiers[target_index]["hp"] -= tower_damage
+					_add_effect(tower_pos, soldiers[target_index]["pos"], "arrow", team_colors[team_id])
+			elif target_type == "hero":
+				if target_index == 0:
+					player_hp -= maxi(1, int(float(tower_damage) * (1.0 - player_armor)))
+					heroes[0]["hp"] = player_hp
+					_add_effect(tower_pos, player_pos, "arrow", team_colors[team_id])
+					if player_hp <= 0:
+						_kill_player()
+				else:
+					heroes[target_index]["hp"] -= tower_damage
+					_add_effect(tower_pos, heroes[target_index]["pos"], "arrow", team_colors[team_id])
+					if int(heroes[target_index]["hp"]) <= 0:
+						_kill_bot_hero(target_index, team_id)
+
+			towers[ti]["timer"] = 1.0
+
+	for i in range(soldiers.size() - 1, -1, -1):
+		if int(soldiers[i]["hp"]) <= 0:
+			soldiers.remove_at(i)
+
+
+func _update_bases(_delta: float) -> void:
+	for team_id in range(4):
+		if not bool(teams[team_id]["alive"]):
+			continue
+
+		var base_pos: Vector2 = base_positions[team_id]
+
+		for i in range(soldiers.size()):
+			var s: Dictionary = soldiers[i]
+			if int(s["team"]) == team_id:
+				continue
+
+			if base_pos.distance_to(s["pos"]) <= BASE_ATTACK_RANGE:
+				if float(s["attack_timer"]) <= 0.0:
+					_damage_base(team_id, int(s["damage"]), int(s["team"]))
+					s["attack_timer"] = SOLDIER_ATTACK_DELAY
+					soldiers[i] = s
+
+		for hero_id in range(4):
+			if hero_id == team_id:
+				continue
+			if hero_id == 0 and not player_alive:
+				continue
+			if hero_id > 0 and not bool(heroes[hero_id]["alive"]):
+				continue
+
+			var hero_pos: Vector2 = player_pos if hero_id == 0 else heroes[hero_id]["pos"]
+			if base_pos.distance_to(hero_pos) <= BASE_ATTACK_RANGE:
+				var h: Dictionary = heroes[hero_id]
+				if float(h["attack_timer"]) <= 0.0:
+					_damage_base(team_id, int(h["damage"]), hero_id)
+					_add_effect(
+						hero_pos, base_pos,
+						"arrow" if str(h["hero_type"]) == "archer" else "swing",
+						team_colors[hero_id]
+					)
+					h["attack_timer"] = float(h["attack_delay"])
+					heroes[hero_id] = h
+
+
+func _damage_base(team_id: int, damage: int, attacker_team: int) -> void:
+	if team_id < 0 or team_id >= teams.size():
+		return
+	if not bool(teams[team_id]["alive"]) or team_id == attacker_team:
+		return
+
+	teams[team_id]["hp"] = int(teams[team_id]["hp"]) - damage
+
+	if int(teams[team_id]["hp"]) <= 0:
+		teams[team_id]["hp"] = 0
+		teams[team_id]["alive"] = false
+
+		for i in range(towers.size() - 1, -1, -1):
+			if int(towers[i]["team"]) == team_id:
+				towers.remove_at(i)
+
+		for i in range(soldiers.size() - 1, -1, -1):
+			if int(soldiers[i]["team"]) == team_id:
+				soldiers.remove_at(i)
+
+		if team_id == 0:
+			player_alive = false
+			player_hp = 0
+
+
+func _level_up_bot(i: int) -> void:
+	while int(teams[i]["xp"]) >= int(teams[i]["level"]) * 100:
+		teams[i]["xp"] -= int(teams[i]["level"]) * 100
+		teams[i]["level"] += 1
+		teams[i]["damage"] += 3
+		heroes[i]["level"] = int(heroes[i]["level"]) + 1
+		heroes[i]["max_hp"] += 20
+		heroes[i]["hp"] = min(
+			int(heroes[i]["hp"]) + 20,
+			int(heroes[i]["max_hp"])
+		)
+		heroes[i]["damage"] += 3
+		heroes[i]["attack_range"] = float(heroes[i]["attack_range"]) + 5.0
+
+
+func _bot_buy_upgrades() -> void:
+	for i in range(1, 4):
+		if not teams[i]["alive"]:
+			continue
+
+		var gold: int = int(teams[i]["gold"])
+		var base_price: int = 250 * int(teams[i]["base_level"])
+
+		if gold >= base_price:
+			teams[i]["gold"] -= base_price
+			_upgrade_base(i)
+		elif gold >= 150:
+			teams[i]["gold"] -= 150
+			for j in range(towers.size()):
+				if int(towers[j]["team"]) == i:
+					towers[j]["damage"] = int(towers[j]["damage"]) + 5
+					towers[j]["range"] = float(towers[j]["range"]) + 15.0
+		elif gold >= 120 and float(heroes[i]["hp"]) < float(heroes[i]["max_hp"]) * 0.55:
+			teams[i]["gold"] -= 120
+			heroes[i]["max_hp"] += 50
+			heroes[i]["hp"] = min(
+				int(heroes[i]["hp"]) + 50,
+				int(heroes[i]["max_hp"])
+			)
+		elif gold >= 100:
+			teams[i]["gold"] -= 100
+			heroes[i]["damage"] += 8
+
+
+func _find_nearest_enemy(
+	pos: Vector2,
+	radius: float,
+	include_heroes: bool,
+	own_team: int = 0
+) -> Dictionary:
+	var best_distance: float = radius
+	var result: Dictionary = {}
+
+	if include_heroes:
+		for i in range(4):
+			if i == own_team or not bool(teams[i]["alive"]):
+				continue
+			if i == 0 and not player_alive:
+				continue
+			if i > 0 and not bool(heroes[i]["alive"]):
+				continue
+
+			var hero_pos: Vector2 = player_pos if i == 0 else heroes[i]["pos"]
+			var d: float = pos.distance_to(hero_pos)
+
+			if d < best_distance:
+				best_distance = d
+				result = {"type": "hero", "index": i}
+
+	for i in range(soldiers.size()):
+		if int(soldiers[i]["team"]) == own_team:
+			continue
+		if not bool(teams[int(soldiers[i]["team"])]["alive"]):
+			continue
+
+		var d: float = pos.distance_to(soldiers[i]["pos"])
+		if d < best_distance:
+			best_distance = d
+			result = {"type": "soldier", "index": i}
+
+	var base_index := _nearest_enemy_base(pos, own_team)
+	if base_index >= 0:
+		var base_distance: float = pos.distance_to(base_positions[base_index])
+		if base_distance < best_distance and base_distance <= BASE_ATTACK_RANGE:
+			result = {"type": "base", "index": base_index}
+
+	return result
+
+
+func _check_game_state() -> void:
+	var living_bases := 0
+	var last_team := -1
+
+	for i in range(4):
+		if bool(teams[i]["alive"]):
+			living_bases += 1
+			last_team = i
+
+	if living_bases <= 1:
+		game_over = true
+		winner_team = last_team
+
+
+func _draw() -> void:
+	var viewport_size: Vector2 = get_viewport_rect().size
+	screen_scale = minf(
+		viewport_size.x / MAP_SIZE.x,
+		viewport_size.y / MAP_SIZE.y
+	)
+	screen_offset = (viewport_size - MAP_SIZE * screen_scale) / 2.0
+
+	draw_set_transform(screen_offset, 0.0, Vector2(screen_scale, screen_scale))
+
+	draw_rect(Rect2(Vector2.ZERO, MAP_SIZE), Color(0.12, 0.18, 0.13))
+	_draw_map()
+	_draw_bases()
+	_draw_towers()
+	_draw_shop()
+	_draw_soldiers()
+	_draw_heroes()
+	_draw_combat_effects()
+
+	if squad_has_target:
+		draw_circle(squad_target, 20.0, Color(1.0, 0.9, 0.2, 0.2))
+		draw_arc(squad_target, 20.0, 0.0, TAU, 32, Color.YELLOW, 3.0)
+
+	_draw_hud()
+
+	if shop_open:
+		_draw_shop_menu()
+
+	if hero_selection_open:
+		_draw_hero_selection()
+
+	if game_over:
+		_draw_game_over()
+
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _draw_map() -> void:
+	draw_rect(Rect2(CENTER - Vector2(175, 130), Vector2(350, 260)), Color(0.24, 0.25, 0.22))
+	draw_circle(CENTER, 125.0, Color(0.3, 0.3, 0.27))
+	draw_circle(CENTER, 90.0, Color(0.35, 0.34, 0.29))
+
+	for x in range(0, 1400, 70):
+		draw_line(Vector2(x, 0), Vector2(x, 900), Color(0.22, 0.28, 0.20, 0.35), 1.0)
+
+	for y in range(0, 900, 70):
+		draw_line(Vector2(0, y), Vector2(1400, y), Color(0.22, 0.28, 0.20, 0.35), 1.0)
+
+	draw_string(ThemeDB.fallback_font, CENTER + Vector2(-45, -145), "ЦЕНТР БИТВЫ", HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color.WHITE)
+
+
+func _draw_bases() -> void:
+	for i in range(4):
+		var p: Vector2 = base_positions[i]
+		var color: Color = team_colors[i]
+
+		if not bool(teams[i]["alive"]):
+			draw_rect(Rect2(p - Vector2(38, 30), Vector2(76, 60)), Color(0.12, 0.1, 0.1))
+			draw_string(ThemeDB.fallback_font, p + Vector2(-32, 5), "РАЗРУШЕНА", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.RED)
+			continue
+
+		draw_rect(Rect2(p - Vector2(38, 30), Vector2(76, 60)), color.darkened(0.3))
+		draw_rect(Rect2(p - Vector2(30, 22), Vector2(60, 44)), color)
+		draw_circle(p, 13.0, Color.WHITE)
+
+		draw_string(
+			ThemeDB.fallback_font, p + Vector2(-28, -40),
+			"База %d ур.%d" % [i + 1, teams[i]["base_level"]],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE
+		)
+
+		var max_hp: float = float(teams[i]["max_hp"])
+		var hp: float = float(teams[i]["hp"])
+		draw_rect(Rect2(p + Vector2(-40, 35), Vector2(80, 7)), Color(0.15, 0.1, 0.1))
+		draw_rect(Rect2(p + Vector2(-40, 35), Vector2(80.0 * maxf(0.0, hp) / max_hp, 7)), color)
+
+
+func _draw_towers() -> void:
+	for tower in towers:
+		var p: Vector2 = tower["pos"]
+		var color: Color = team_colors[int(tower["team"])]
+
+		draw_circle(p, 15.0, Color(0.08, 0.08, 0.08))
+		draw_rect(Rect2(p - Vector2(9, 12), Vector2(18, 24)), color.darkened(0.2))
+		draw_circle(p, 5.0, color.lightened(0.3))
+
+		var hp_ratio: float = float(tower["hp"]) / float(tower["max_hp"])
+		draw_rect(Rect2(p + Vector2(-12, 17), Vector2(24, 4)), Color.BLACK)
+		draw_rect(Rect2(p + Vector2(-12, 17), Vector2(24.0 * hp_ratio, 4)), Color.LIME_GREEN)
+
+
+func _draw_shop() -> void:
+	var p: Vector2 = SHOP_POS
+
+	draw_rect(Rect2(p + Vector2(-55, -43), Vector2(110, 92)), Color(0.07, 0.07, 0.06))
+	draw_rect(Rect2(p + Vector2(-49, -37), Vector2(98, 78)), Color(0.52, 0.34, 0.2))
+	draw_rect(Rect2(p + Vector2(-42, -28), Vector2(84, 62)), Color(0.72, 0.56, 0.34))
+
+	var roof := PackedVector2Array([
+		p + Vector2(-58, -30),
+		p + Vector2(0, -70),
+		p + Vector2(58, -30)
+	])
+	draw_colored_polygon(roof, Color(0.55, 0.12, 0.1))
+	draw_line(roof[0], roof[1], Color(0.85, 0.45, 0.25), 4.0)
+	draw_line(roof[1], roof[2], Color(0.85, 0.45, 0.25), 4.0)
+
+	draw_rect(Rect2(p + Vector2(-12, 5), Vector2(24, 34)), Color(0.22, 0.13, 0.08))
+	draw_rect(Rect2(p + Vector2(-34, -10), Vector2(16, 18)), Color(0.5, 0.85, 0.95))
+	draw_rect(Rect2(p + Vector2(18, -10), Vector2(16, 18)), Color(0.5, 0.85, 0.95))
+
+	draw_rect(Rect2(p + Vector2(-43, -90), Vector2(86, 20)), Color(0.08, 0.08, 0.08))
+	draw_string(ThemeDB.fallback_font, p + Vector2(-35, -75), "МАГАЗИН", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.GOLD)
+	draw_string(ThemeDB.fallback_font, p + Vector2(-80, 65), "Щёлкни по зданию", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+
+
+func _draw_soldiers() -> void:
+	for s in soldiers:
+		var p: Vector2 = s["pos"]
+		var color: Color = team_colors[int(s["team"])]
+
+		draw_circle(p, 10.0, color.darkened(0.35))
+		draw_circle(p, 7.0, color)
+		draw_rect(Rect2(p + Vector2(-9, -15), Vector2(18, 3)), Color(0.12, 0.08, 0.08))
+		draw_rect(
+			Rect2(p + Vector2(-9, -15), Vector2(18.0 * maxf(0.0, float(s["hp"])) / float(s["max_hp"]), 0)),
+			Color.LIME_GREEN
+		)
+
+
+func _draw_heroes() -> void:
+	for i in range(4):
+		var alive: bool = player_alive if i == 0 else bool(heroes[i]["alive"])
+		if not alive:
+			if i == 0:
+				draw_string(
+					ThemeDB.fallback_font, Vector2(25, 205),
+					"Возрождение через: %.1f сек." % maxf(0.0, player_respawn_timer),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color.ORANGE
+				)
+			continue
+
+		var p: Vector2 = player_pos if i == 0 else heroes[i]["pos"]
+		var color: Color = team_colors[i]
+		var hp: float = float(player_hp) if i == 0 else float(heroes[i]["hp"])
+		var max_hp: float = float(player_max_hp) if i == 0 else float(heroes[i]["max_hp"])
+		var hero_type: String = str(heroes[i]["hero_type"])
+		var level: int = player_level if i == 0 else int(heroes[i]["level"])
+
+		draw_circle(p, 18.0, Color.BLACK)
+		draw_circle(p, 14.0, color)
+
+		if hero_type == "archer":
+			draw_line(p + Vector2(-7, -7), p + Vector2(7, 7), Color.WHITE, 3.0)
+			draw_line(p + Vector2(-7, 7), p + Vector2(7, -7), Color.WHITE, 2.0)
+		else:
+			draw_circle(p + Vector2(-4, -4), 4.0, Color.WHITE)
+
+		draw_rect(Rect2(p + Vector2(-20, -27), Vector2(40, 5)), Color(0.12, 0.08, 0.08))
+		draw_rect(
+			Rect2(p + Vector2(-20, -27), Vector2(40.0 * maxf(0.0, hp) / maxf(1.0, max_hp), 5)),
+			Color.LIME_GREEN
+		)
+
+		var label: String = "Лучник" if hero_type == "archer" else "Пехотинец"
+		draw_string(
+			ThemeDB.fallback_font, p + Vector2(-30, 30),
+			"%s ур.%d" % [label, level],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE
+		)
+
+
+func _draw_combat_effects() -> void:
+	for effect in effects:
+		var from_pos: Vector2 = effect["from"]
+		var to_pos: Vector2 = effect["to"]
+		var ratio: float = clampf(float(effect["time"]) / float(effect["duration"]), 0.0, 1.0)
+		var kind: String = str(effect["kind"])
+
+		if kind == "arrow":
+			var end_pos: Vector2 = to_pos.lerp(from_pos, 1.0 - ratio)
+			draw_line(from_pos, end_pos, Color(1.0, 0.9, 0.45), 3.0)
+			var direction: Vector2 = (end_pos - from_pos).normalized()
+			var perpendicular := Vector2(-direction.y, direction.x)
+			draw_line(end_pos, end_pos - direction * 10.0 + perpendicular * 5.0, Color.WHITE, 2.0)
+			draw_line(end_pos, end_pos - direction * 10.0 - perpendicular * 5.0, Color.WHITE, 2.0)
+
+		elif kind == "swing":
+			var mid: Vector2 = from_pos.lerp(to_pos, 0.5)
+			var radius: float = 16.0 + (1.0 - ratio) * 15.0
+			draw_arc(mid, radius, -0.8, 1.8, 18, Color(1.0, 0.95, 0.6), 4.0)
+
+		elif kind == "levelup":
+			draw_arc(from_pos, 18.0 + (1.0 - ratio) * 35.0, 0.0, TAU, 28, Color.GOLD, 3.0)
+
+		elif kind == "death":
+			draw_arc(from_pos, 12.0 + (1.0 - ratio) * 30.0, 0.0, TAU, 24, Color.WHITE, 2.0)
+
+
+func _draw_hud() -> void:
+	draw_rect(Rect2(10, 10, 480, 205), Color(0.03, 0.04, 0.05, 0.88))
+
+	draw_string(ThemeDB.fallback_font, Vector2(25, 35), "Золото: %d" % player_gold, HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color.GOLD)
+	draw_string(ThemeDB.fallback_font, Vector2(25, 60), "Уровень: %d   Опыт: %d/%d" % [player_level, player_xp, player_level * 100], HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, Vector2(25, 85), "Здоровье: %d/%d" % [player_hp, player_max_hp], HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, Vector2(25, 110), "База: уровень %d" % int(teams[0]["base_level"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.CYAN)
+	draw_string(ThemeDB.fallback_font, Vector2(25, 135), "WASD/стрелки — движение", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, Vector2(25, 155), "Атака автоматическая | E — магазин", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, Vector2(25, 175), "Убийства героя: %d" % int(heroes[0]["kills"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.GOLD)
+
+	var command_color: Color = Color(0.75, 0.45, 0.1) if command_mode else Color(0.15, 0.35, 0.2)
+	draw_rect(command_button_rect, command_color)
+	draw_rect(command_button_rect, Color.WHITE, false, 2.0)
+	var command_text: String = "Выбери точку!" if command_mode else "Приказ отряду"
+	draw_string(ThemeDB.fallback_font, command_button_rect.position + Vector2(8, 27), command_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+
+	_draw_selected_info()
+
+
+func _draw_selected_info() -> void:
+	if selected_unit.is_empty():
+		return
+
+	var kind: String = str(selected_unit["type"])
+	var idx: int = int(selected_unit["index"])
+	var box := Rect2(10, 235, 310, 150)
+	draw_rect(box, Color(0.03, 0.04, 0.05, 0.88))
+
+	var y := 260.0
+	var title := "Информация"
+
+	match kind:
+		"hero":
+			var h: Dictionary = heroes[idx]
+			title = "Герой команды %d" % (idx + 1)
+			draw_string(ThemeDB.fallback_font, Vector2(25, y), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[idx])
+			y += 25
+			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Уровень: %d" % int(h["level"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+			y += 22
+			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(h["hp"]), int(h["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+			y += 22
+			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d | Дальность: %.0f" % [int(h["damage"]), float(h["attack_range"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+
+		"soldier":
+			if idx < soldiers.size():
+				var s: Dictionary = soldiers[idx]
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Солдат команды %d" % (int(s["team"]) + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[int(s["team"])])
+				y += 25
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(s["hp"]), int(s["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+				y += 22
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d" % int(s["damage"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+
+		"tower":
+			if idx < towers.size():
+				var t: Dictionary = towers[idx]
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Башня команды %d" % (int(t["team"]) + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[int(t["team"])])
+				y += 25
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(t["hp"]), int(t["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+				y += 22
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d | Дальность: %.0f" % [int(t["damage"]), float(t["range"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+
+		"base":
+			draw_string(ThemeDB.fallback_font, Vector2(25, y), "База команды %d" % (idx + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[idx])
+			y += 25
+			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(teams[idx]["hp"]), int(teams[idx]["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+			y += 22
+			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Уровень базы: %d" % int(teams[idx]["base_level"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+
+
+func _draw_hero_selection() -> void:
+	draw_rect(Rect2(Vector2.ZERO, MAP_SIZE), Color(0.0, 0.0, 0.0, 0.8))
+	draw_string(ThemeDB.fallback_font, Vector2(430, 270), "ВЫБЕРИ СВОЕГО ГЕРОЯ", HORIZONTAL_ALIGNMENT_LEFT, -1, 30, Color.GOLD)
+
+	draw_rect(Rect2(440, 350, 230, 100), Color(0.2, 0.35, 0.5))
+	draw_rect(Rect2(440, 350, 230, 100), Color.WHITE, false, 3.0)
+	draw_circle(Vector2(555, 380), 14, team_colors[0])
+	draw_string(ThemeDB.fallback_font, Vector2(475, 425), "1. Пехотинец", HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color.WHITE)
+
+	draw_rect(Rect2(730, 350, 230, 100), Color(0.35, 0.3, 0.15))
+	draw_rect(Rect2(730, 350, 230, 100), Color.WHITE, false, 3.0)
+	draw_circle(Vector2(845, 380), 14, Color(0.85, 0.75, 0.35))
+	draw_string(ThemeDB.fallback_font, Vector2(775, 425), "2. Лучник", HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color.WHITE)
+
+	draw_string(ThemeDB.fallback_font, Vector2(435, 490), "Пехотинец: сильный удар вблизи", HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.LIGHT_GRAY)
+	draw_string(ThemeDB.fallback_font, Vector2(435, 520), "Лучник: слабее удар, больше дальность", HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.LIGHT_GRAY)
+
+
+func _draw_shop_menu() -> void:
+	draw_rect(Rect2(Vector2.ZERO, MAP_SIZE), Color(0.0, 0.0, 0.0, 0.65))
+	draw_rect(shop_rect, Color(0.12, 0.14, 0.17))
+	draw_rect(shop_rect, Color(0.75, 0.61, 0.35), false, 4.0)
+
+	draw_string(ThemeDB.fallback_font, shop_rect.position + Vector2(25, 40), "МАГАЗИН УСИЛЕНИЙ", HORIZONTAL_ALIGNMENT_LEFT, -1, 28, Color.GOLD)
+	draw_string(ThemeDB.fallback_font, shop_rect.position + Vector2(25, 70), "Твоё золото: %d" % player_gold, HORIZONTAL_ALIGNMENT_LEFT, -1, 19, Color.WHITE)
+
+	draw_rect(Rect2(shop_rect.end - Vector2(55, 48), Vector2(40, 36)), Color(0.55, 0.15, 0.12))
+	draw_string(ThemeDB.fallback_font, shop_rect.end - Vector2(46, 23), "X", HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
+
+	for i in range(shop_items.size()):
+		var item: Dictionary = shop_items[i]
+		var y: float = shop_rect.position.y + 85 + i * 73
+		var price: int = int(item["price"])
+		var key: String = str(item["key"])
+
+		if key == "base":
+			price = 250 * int(teams[0]["base_level"])
+
+		var row := Rect2(shop_rect.position.x + 20, y, 760, 62)
+		draw_rect(row, Color(0.2, 0.22, 0.24))
+
+		draw_string(ThemeDB.fallback_font, Vector2(shop_rect.position.x + 35, y + 24), str(item["name"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color.WHITE)
+		draw_string(ThemeDB.fallback_font, Vector2(shop_rect.position.x + 35, y + 47), str(item["description"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color.LIGHT_GRAY)
+
+		var can_buy := player_gold >= price
+		if key == "archer_range" and selected_hero_type != "archer":
+			can_buy = false
+
+		var button_color: Color = Color(0.15, 0.5, 0.25) if can_buy else Color(0.35, 0.25, 0.25)
+		draw_rect(Rect2(shop_rect.position.x + 595, y + 7, 165, 48), button_color)
+		draw_string(ThemeDB.fallback_font, Vector2(shop_rect.position.x + 605, y + 36), "Купить: %d" % price, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+
+	draw_string(ThemeDB.fallback_font, shop_rect.position + Vector2(25, 715), "Клавиши 1–8 — купить улучшение. ESC — закрыть.", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.LIGHT_GRAY)
+
+
+func _draw_game_over() -> void:
+	draw_rect(Rect2(350, 300, 700, 280), Color(0.04, 0.04, 0.05, 0.96))
+
+	var message := "НИЧЬЯ!"
+	if winner_team == 0:
+		message = "ПОБЕДА! ТВОЯ БАЗА ПОБЕДИЛА!"
+	elif winner_team > 0:
+		message = "ПОБЕДИЛА КОМАНДА %d" % (winner_team + 1)
+
+	var color: Color = team_colors[maxi(0, winner_team)]
+	draw_string(ThemeDB.fallback_font, Vector2(410, 370), message, HORIZONTAL_ALIGNMENT_LEFT, -1, 30, color)
+	draw_string(ThemeDB.fallback_font, Vector2(410, 420), "Игра заканчивается, когда остаётся одна база.", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color.WHITE)
+
+	draw_rect(Rect2(550, 440, 300, 60), Color(0.15, 0.4, 0.22))
+	draw_rect(Rect2(550, 440, 300, 60), Color.WHITE, false, 2.0)
+	draw_string(ThemeDB.fallback_font, Vector2(605, 477), "R — новая игра", HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
