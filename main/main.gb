@@ -16,6 +16,8 @@ const HERO_RESPAWN_TIME := 4.0
 const SOLDIER_ATTACK_DELAY := 0.8
 const BASE_ATTACK_RANGE := 65.0
 
+var next_unit_id: int = 1
+
 var heroes: Array = []
 var soldiers: Array = []
 var teams: Array = []
@@ -90,6 +92,7 @@ func _ready() -> void:
 
 
 func _initialize_game() -> void:
+	next_unit_id = 1
 	teams.clear()
 	heroes.clear()
 	soldiers.clear()
@@ -105,7 +108,7 @@ func _initialize_game() -> void:
 			"xp": 0,
 			"level": 1,
 			"base_level": 1,
-			"damage": 15,
+			"damage": 8,
 			"alive": true
 		})
 
@@ -134,6 +137,7 @@ func _initialize_game() -> void:
 			Vector2(0, 52)
 		]:
 			towers.append({
+				"id": next_unit_id,
 				"team": i,
 				"pos": base_positions[i] + offset,
 				"hp": 250,
@@ -142,6 +146,7 @@ func _initialize_game() -> void:
 				"range": TOWER_RANGE,
 				"timer": randf_range(0.0, 0.8)
 			})
+			next_unit_id += 1
 
 	_set_hero_type(0, "infantry")
 
@@ -224,7 +229,7 @@ func _process(delta: float) -> void:
 	_update_soldiers(delta)
 	_update_bots(delta)
 	_update_towers(delta)
-	_update_bases(delta)
+	_cleanup_dead_soldiers()
 
 	spawn_timer += delta
 	economy_timer += delta
@@ -279,6 +284,13 @@ func _input(event: InputEvent) -> void:
 			return
 
 	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+			# Правый клик отменяет приказ отряду и сбрасывает режим команды
+			command_mode = false
+			squad_has_target = false
+			queue_redraw()
+			return
+
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			var map_mouse: Vector2 = (event.position - screen_offset) / screen_scale
 
@@ -303,7 +315,7 @@ func _input(event: InputEvent) -> void:
 				return
 
 			if command_button_rect.has_point(map_mouse):
-				command_mode = true
+				command_mode = not command_mode
 				queue_redraw()
 				return
 
@@ -358,26 +370,25 @@ func _select_unit_at(pos: Vector2) -> void:
 	selected_unit.clear()
 
 	for i in range(4):
-		var hp: float = float(player_hp) if i == 0 else float(heroes[i]["hp"])
-		var hero_pos: Vector2 = player_pos if i == 0 else heroes[i]["pos"]
 		var alive: bool = player_alive if i == 0 else bool(heroes[i]["alive"])
+		var hero_pos: Vector2 = player_pos if i == 0 else heroes[i]["pos"]
 
 		if alive and hero_pos.distance_to(pos) < 25.0:
 			selected_unit = {"type": "hero", "index": i}
 			return
 
-	for i in range(soldiers.size()):
-		if soldiers[i]["pos"].distance_to(pos) < 16.0:
-			selected_unit = {"type": "soldier", "index": i}
+	for s in soldiers:
+		if int(s["hp"]) > 0 and s["pos"].distance_to(pos) < 16.0:
+			selected_unit = {"type": "soldier", "id": s["id"]}
 			return
 
-	for i in range(towers.size()):
-		if towers[i]["pos"].distance_to(pos) < 20.0:
-			selected_unit = {"type": "tower", "index": i}
+	for t in towers:
+		if t["pos"].distance_to(pos) < 20.0:
+			selected_unit = {"type": "tower", "id": t["id"]}
 			return
 
 	for i in range(4):
-		if base_positions[i].distance_to(pos) < 45.0:
+		if bool(teams[i]["alive"]) and base_positions[i].distance_to(pos) < 45.0:
 			selected_unit = {"type": "base", "index": i}
 			return
 
@@ -467,16 +478,16 @@ func _upgrade_base(team_id: int) -> void:
 
 	teams[team_id]["base_level"] = level + 1
 	teams[team_id]["max_hp"] += 300
-	teams[team_id]["hp"] = min(
+	teams[team_id]["hp"] = mini(
 		int(teams[team_id]["max_hp"]),
 		int(teams[team_id]["hp"]) + 300
 	)
-	teams[team_id]["damage"] += 5
+	teams[team_id]["damage"] = int(teams[team_id]["damage"]) + 3
 
 	for i in range(towers.size()):
 		if int(towers[i]["team"]) == team_id:
 			towers[i]["max_hp"] += 50
-			towers[i]["hp"] = min(
+			towers[i]["hp"] = mini(
 				int(towers[i]["hp"]) + 50,
 				int(towers[i]["max_hp"])
 			)
@@ -504,7 +515,6 @@ func _update_player(delta: float) -> void:
 	player_pos.x = clampf(player_pos.x, 25.0, MAP_SIZE.x - 25.0)
 	player_pos.y = clampf(player_pos.y, 25.0, MAP_SIZE.y - 25.0)
 
-	# Автоатака: Enter больше не требуется.
 	if attack_cooldown <= 0.0:
 		_player_attack()
 		attack_cooldown = float(heroes[0]["attack_delay"])
@@ -526,27 +536,7 @@ func _player_attack() -> void:
 	_add_effect(player_pos, target_pos, kind, team_colors[0])
 
 	var damage := _get_player_damage()
-
-	match str(target["type"]):
-		"hero":
-			var idx: int = int(target["index"])
-			if bool(heroes[idx]["alive"]):
-				heroes[idx]["hp"] = int(heroes[idx]["hp"]) - damage
-				if int(heroes[idx]["hp"]) <= 0:
-					_kill_bot_hero(idx, 0)
-
-		"soldier":
-			var idx: int = int(target["index"])
-			if idx >= 0 and idx < soldiers.size():
-				soldiers[idx]["hp"] = int(soldiers[idx]["hp"]) - damage
-				if int(soldiers[idx]["hp"]) <= 0:
-					soldiers.remove_at(idx)
-					player_gold += 10
-					heroes[0]["kills"] = int(heroes[0]["kills"]) + 1
-					_gain_player_xp(15)
-
-		"base":
-			_damage_base(int(target["index"]), damage, 0)
+	_apply_unit_attack(target, damage, 0)
 
 
 func _get_player_damage() -> int:
@@ -605,9 +595,10 @@ func _spawn_soldiers() -> void:
 				randf_range(-25.0, 25.0)
 			)
 			var max_hp: int = 55 + (base_level - 1) * 25
-			var damage: int = 8 + int(teams[team_id]["level"]) + (base_level - 1) * 5
+			var damage: int = int(teams[team_id]["damage"]) + int(teams[team_id]["level"]) * 2
 
 			soldiers.append({
+				"id": next_unit_id,
 				"team": team_id,
 				"pos": base_positions[team_id] + Vector2(65, 55) + offset,
 				"hp": max_hp,
@@ -616,11 +607,15 @@ func _spawn_soldiers() -> void:
 				"attack_timer": randf_range(0.0, 0.5),
 				"attack_flash": 0.0
 			})
+			next_unit_id += 1
 
 
 func _update_soldiers(delta: float) -> void:
 	for i in range(soldiers.size()):
 		var s: Dictionary = soldiers[i]
+		if int(s["hp"]) <= 0:
+			continue
+
 		s["attack_timer"] = maxf(0.0, float(s["attack_timer"]) - delta)
 		s["attack_flash"] = maxf(0.0, float(s["attack_flash"]) - delta)
 
@@ -629,18 +624,15 @@ func _update_soldiers(delta: float) -> void:
 		var target := _find_nearest_enemy(pos, 95.0, true, team_id)
 
 		if target.is_empty():
-			var enemy_base := _nearest_enemy_base(pos, team_id)
-			if enemy_base >= 0:
-				var base_pos: Vector2 = base_positions[enemy_base]
-				if pos.distance_to(base_pos) <= BASE_ATTACK_RANGE:
-					if float(s["attack_timer"]) <= 0.0:
-						_damage_base(enemy_base, int(s["damage"]), team_id)
-						s["attack_timer"] = SOLDIER_ATTACK_DELAY
-						_add_effect(pos, base_pos, "swing", team_colors[team_id])
-				else:
+			# Приказ отряду имеет приоритет для отряда игрока
+			if team_id == 0 and squad_has_target:
+				if pos.distance_to(squad_target) > 15.0:
+					s["pos"] = pos.move_toward(squad_target, SOLDIER_SPEED * delta)
+			else:
+				var enemy_base := _nearest_enemy_base(pos, team_id)
+				if enemy_base >= 0:
+					var base_pos: Vector2 = base_positions[enemy_base]
 					s["pos"] = pos.move_toward(base_pos, SOLDIER_SPEED * delta)
-			elif team_id == 0 and squad_has_target:
-				s["pos"] = pos.move_toward(squad_target, SOLDIER_SPEED * delta)
 
 		elif float(s["attack_timer"]) <= 0.0:
 			_add_effect(pos, _target_position(target), "swing", team_colors[team_id])
@@ -653,6 +645,8 @@ func _update_soldiers(delta: float) -> void:
 		s["pos"] = new_pos
 		soldiers[i] = s
 
+
+func _cleanup_dead_soldiers() -> void:
 	for i in range(soldiers.size() - 1, -1, -1):
 		if int(soldiers[i]["hp"]) <= 0:
 			soldiers.remove_at(i)
@@ -685,17 +679,7 @@ func _update_bots(delta: float) -> void:
 			var enemy_base := _nearest_enemy_base(pos, i)
 			if enemy_base >= 0:
 				var base_pos: Vector2 = base_positions[enemy_base]
-				if pos.distance_to(base_pos) <= BASE_ATTACK_RANGE:
-					if float(h["attack_timer"]) <= 0.0:
-						_add_effect(
-							pos, base_pos,
-							"arrow" if str(h["hero_type"]) == "archer" else "swing",
-							team_colors[i]
-						)
-						_damage_base(enemy_base, int(h["damage"]), i)
-						h["attack_timer"] = float(h["attack_delay"])
-				else:
-					h["pos"] = pos.move_toward(base_pos, float(h["speed"]) * delta)
+				h["pos"] = pos.move_toward(base_pos, float(h["speed"]) * delta)
 		elif float(h["attack_timer"]) <= 0.0:
 			_add_effect(
 				pos, _target_position(target),
@@ -729,16 +713,16 @@ func _apply_unit_attack(target: Dictionary, damage: int, attacker_team: int) -> 
 		"soldier":
 			var idx: int = int(target["index"])
 			if idx >= 0 and idx < soldiers.size():
-				soldiers[idx]["hp"] = int(soldiers[idx]["hp"]) - damage
-				if int(soldiers[idx]["hp"]) <= 0:
-					# Опыт получают только герои за убийства.
-					if attacker_team == 0:
-						player_gold += 10
-						heroes[0]["kills"] = int(heroes[0]["kills"]) + 1
-						_gain_player_xp(15)
-					elif attacker_team > 0:
-						teams[attacker_team]["gold"] += 10
-						teams[attacker_team]["xp"] += 15
+				if int(soldiers[idx]["hp"]) > 0:
+					soldiers[idx]["hp"] = int(soldiers[idx]["hp"]) - damage
+					if int(soldiers[idx]["hp"]) <= 0:
+						if attacker_team == 0:
+							player_gold += 10
+							heroes[0]["kills"] = int(heroes[0]["kills"]) + 1
+							_gain_player_xp(15)
+						elif attacker_team > 0:
+							teams[attacker_team]["gold"] += 10
+							teams[attacker_team]["xp"] += 15
 
 		"base":
 			_damage_base(int(target["index"]), damage, attacker_team)
@@ -810,7 +794,7 @@ func _update_towers(delta: float) -> void:
 		var best_distance: float = tower_range
 
 		for i in range(soldiers.size()):
-			if int(soldiers[i]["team"]) == team_id:
+			if int(soldiers[i]["team"]) == team_id or int(soldiers[i]["hp"]) <= 0:
 				continue
 
 			var d: float = tower_pos.distance_to(soldiers[i]["pos"])
@@ -836,7 +820,7 @@ func _update_towers(delta: float) -> void:
 
 		if target_index >= 0:
 			if target_type == "soldier":
-				if target_index < soldiers.size():
+				if target_index < soldiers.size() and int(soldiers[target_index]["hp"]) > 0:
 					soldiers[target_index]["hp"] -= tower_damage
 					_add_effect(tower_pos, soldiers[target_index]["pos"], "arrow", team_colors[team_id])
 			elif target_type == "hero":
@@ -854,50 +838,6 @@ func _update_towers(delta: float) -> void:
 
 			towers[ti]["timer"] = 1.0
 
-	for i in range(soldiers.size() - 1, -1, -1):
-		if int(soldiers[i]["hp"]) <= 0:
-			soldiers.remove_at(i)
-
-
-func _update_bases(_delta: float) -> void:
-	for team_id in range(4):
-		if not bool(teams[team_id]["alive"]):
-			continue
-
-		var base_pos: Vector2 = base_positions[team_id]
-
-		for i in range(soldiers.size()):
-			var s: Dictionary = soldiers[i]
-			if int(s["team"]) == team_id:
-				continue
-
-			if base_pos.distance_to(s["pos"]) <= BASE_ATTACK_RANGE:
-				if float(s["attack_timer"]) <= 0.0:
-					_damage_base(team_id, int(s["damage"]), int(s["team"]))
-					s["attack_timer"] = SOLDIER_ATTACK_DELAY
-					soldiers[i] = s
-
-		for hero_id in range(4):
-			if hero_id == team_id:
-				continue
-			if hero_id == 0 and not player_alive:
-				continue
-			if hero_id > 0 and not bool(heroes[hero_id]["alive"]):
-				continue
-
-			var hero_pos: Vector2 = player_pos if hero_id == 0 else heroes[hero_id]["pos"]
-			if base_pos.distance_to(hero_pos) <= BASE_ATTACK_RANGE:
-				var h: Dictionary = heroes[hero_id]
-				if float(h["attack_timer"]) <= 0.0:
-					_damage_base(team_id, int(h["damage"]), hero_id)
-					_add_effect(
-						hero_pos, base_pos,
-						"arrow" if str(h["hero_type"]) == "archer" else "swing",
-						team_colors[hero_id]
-					)
-					h["attack_timer"] = float(h["attack_delay"])
-					heroes[hero_id] = h
-
 
 func _damage_base(team_id: int, damage: int, attacker_team: int) -> void:
 	if team_id < 0 or team_id >= teams.size():
@@ -905,7 +845,7 @@ func _damage_base(team_id: int, damage: int, attacker_team: int) -> void:
 	if not bool(teams[team_id]["alive"]) or team_id == attacker_team:
 		return
 
-	teams[team_id]["hp"] = int(teams[team_id]["hp"]) - damage
+	teams[team_id]["hp"] = maxi(0, int(teams[team_id]["hp"]) - damage)
 
 	if int(teams[team_id]["hp"]) <= 0:
 		teams[team_id]["hp"] = 0
@@ -931,7 +871,7 @@ func _level_up_bot(i: int) -> void:
 		teams[i]["damage"] += 3
 		heroes[i]["level"] = int(heroes[i]["level"]) + 1
 		heroes[i]["max_hp"] += 20
-		heroes[i]["hp"] = min(
+		heroes[i]["hp"] = mini(
 			int(heroes[i]["hp"]) + 20,
 			int(heroes[i]["max_hp"])
 		)
@@ -959,7 +899,7 @@ func _bot_buy_upgrades() -> void:
 		elif gold >= 120 and float(heroes[i]["hp"]) < float(heroes[i]["max_hp"]) * 0.55:
 			teams[i]["gold"] -= 120
 			heroes[i]["max_hp"] += 50
-			heroes[i]["hp"] = min(
+			heroes[i]["hp"] = mini(
 				int(heroes[i]["hp"]) + 50,
 				int(heroes[i]["max_hp"])
 			)
@@ -998,6 +938,8 @@ func _find_nearest_enemy(
 			continue
 		if not bool(teams[int(soldiers[i]["team"])]["alive"]):
 			continue
+		if int(soldiers[i]["hp"]) <= 0:
+			continue
 
 		var d: float = pos.distance_to(soldiers[i]["pos"])
 		if d < best_distance:
@@ -1007,7 +949,7 @@ func _find_nearest_enemy(
 	var base_index := _nearest_enemy_base(pos, own_team)
 	if base_index >= 0:
 		var base_distance: float = pos.distance_to(base_positions[base_index])
-		if base_distance < best_distance and base_distance <= BASE_ATTACK_RANGE:
+		if base_distance < best_distance:
 			result = {"type": "base", "index": base_index}
 
 	return result
@@ -1152,7 +1094,7 @@ func _draw_soldiers() -> void:
 		draw_circle(p, 7.0, color)
 		draw_rect(Rect2(p + Vector2(-9, -15), Vector2(18, 3)), Color(0.12, 0.08, 0.08))
 		draw_rect(
-			Rect2(p + Vector2(-9, -15), Vector2(18.0 * maxf(0.0, float(s["hp"])) / float(s["max_hp"]), 0)),
+			Rect2(p + Vector2(-9, -15), Vector2(18.0 * maxf(0.0, float(s["hp"])) / float(s["max_hp"]), 3)),
 			Color.LIME_GREEN
 		)
 
@@ -1161,12 +1103,6 @@ func _draw_heroes() -> void:
 	for i in range(4):
 		var alive: bool = player_alive if i == 0 else bool(heroes[i]["alive"])
 		if not alive:
-			if i == 0:
-				draw_string(
-					ThemeDB.fallback_font, Vector2(25, 205),
-					"Возрождение через: %.1f сек." % maxf(0.0, player_respawn_timer),
-					HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color.ORANGE
-				)
 			continue
 
 		var p: Vector2 = player_pos if i == 0 else heroes[i]["pos"]
@@ -1231,16 +1167,21 @@ func _draw_hud() -> void:
 
 	draw_string(ThemeDB.fallback_font, Vector2(25, 35), "Золото: %d" % player_gold, HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color.GOLD)
 	draw_string(ThemeDB.fallback_font, Vector2(25, 60), "Уровень: %d   Опыт: %d/%d" % [player_level, player_xp, player_level * 100], HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.WHITE)
-	draw_string(ThemeDB.fallback_font, Vector2(25, 85), "Здоровье: %d/%d" % [player_hp, player_max_hp], HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.WHITE)
+
+	if player_alive:
+		draw_string(ThemeDB.fallback_font, Vector2(25, 85), "Здоровье: %d/%d" % [player_hp, player_max_hp], HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.WHITE)
+	else:
+		draw_string(ThemeDB.fallback_font, Vector2(25, 85), "МЁРТВ! Возрождение: %.1f сек." % maxf(0.0, player_respawn_timer), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.ORANGE)
+
 	draw_string(ThemeDB.fallback_font, Vector2(25, 110), "База: уровень %d" % int(teams[0]["base_level"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.CYAN)
 	draw_string(ThemeDB.fallback_font, Vector2(25, 135), "WASD/стрелки — движение", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
-	draw_string(ThemeDB.fallback_font, Vector2(25, 155), "Атака автоматическая | E — магазин", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, Vector2(25, 155), "Атака авто | ПКМ — сброс приказа | E — магазин", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
 	draw_string(ThemeDB.fallback_font, Vector2(25, 175), "Убийства героя: %d" % int(heroes[0]["kills"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.GOLD)
 
 	var command_color: Color = Color(0.75, 0.45, 0.1) if command_mode else Color(0.15, 0.35, 0.2)
 	draw_rect(command_button_rect, command_color)
 	draw_rect(command_button_rect, Color.WHITE, false, 2.0)
-	var command_text: String = "Выбери точку!" if command_mode else "Приказ отряду"
+	var command_text: String = "Выбери точку!" if command_mode else ("Отряд идёт в цель" if squad_has_target else "Приказ отряду")
 	draw_string(ThemeDB.fallback_font, command_button_rect.position + Vector2(8, 27), command_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
 
 	_draw_selected_info()
@@ -1251,49 +1192,74 @@ func _draw_selected_info() -> void:
 		return
 
 	var kind: String = str(selected_unit["type"])
-	var idx: int = int(selected_unit["index"])
 	var box := Rect2(10, 235, 310, 150)
 	draw_rect(box, Color(0.03, 0.04, 0.05, 0.88))
 
 	var y := 260.0
-	var title := "Информация"
 
 	match kind:
 		"hero":
-			var h: Dictionary = heroes[idx]
-			title = "Герой команды %d" % (idx + 1)
-			draw_string(ThemeDB.fallback_font, Vector2(25, y), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[idx])
-			y += 25
-			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Уровень: %d" % int(h["level"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
-			y += 22
-			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(h["hp"]), int(h["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
-			y += 22
-			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d | Дальность: %.0f" % [int(h["damage"]), float(h["attack_range"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+			var idx: int = int(selected_unit["index"])
+			if idx >= 0 and idx < heroes.size():
+				var h: Dictionary = heroes[idx]
+				var is_alive: bool = player_alive if idx == 0 else bool(h["alive"])
+				if is_alive:
+					draw_string(ThemeDB.fallback_font, Vector2(25, y), "Герой команды %d" % (idx + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[idx])
+					y += 25
+					var lvl: int = player_level if idx == 0 else int(h["level"])
+					var cur_hp: int = player_hp if idx == 0 else int(h["hp"])
+					var max_h: int = player_max_hp if idx == 0 else int(h["max_hp"])
+					var dmg: int = _get_player_damage() if idx == 0 else int(h["damage"])
+					draw_string(ThemeDB.fallback_font, Vector2(25, y), "Уровень: %d" % lvl, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+					y += 22
+					draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [cur_hp, max_h], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+					y += 22
+					draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d | Дальность: %.0f" % [dmg, float(h["attack_range"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+				else:
+					selected_unit.clear()
 
 		"soldier":
-			if idx < soldiers.size():
-				var s: Dictionary = soldiers[idx]
-				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Солдат команды %d" % (int(s["team"]) + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[int(s["team"])])
+			var s_id: int = int(selected_unit.get("id", -1))
+			var found_soldier: Dictionary = {}
+			for s in soldiers:
+				if int(s["id"]) == s_id and int(s["hp"]) > 0:
+					found_soldier = s
+					break
+			if not found_soldier.is_empty():
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Солдат команды %d" % (int(found_soldier["team"]) + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[int(found_soldier["team"])])
 				y += 25
-				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(s["hp"]), int(s["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(found_soldier["hp"]), int(found_soldier["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
 				y += 22
-				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d" % int(s["damage"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d" % int(found_soldier["damage"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+			else:
+				selected_unit.clear()
 
 		"tower":
-			if idx < towers.size():
-				var t: Dictionary = towers[idx]
-				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Башня команды %d" % (int(t["team"]) + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[int(t["team"])])
+			var t_id: int = int(selected_unit.get("id", -1))
+			var found_tower: Dictionary = {}
+			for t in towers:
+				if int(t["id"]) == t_id and int(t["hp"]) > 0:
+					found_tower = t
+					break
+			if not found_tower.is_empty():
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Башня команды %d" % (int(found_tower["team"]) + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[int(found_tower["team"])])
 				y += 25
-				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(t["hp"]), int(t["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(found_tower["hp"]), int(found_tower["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
 				y += 22
-				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d | Дальность: %.0f" % [int(t["damage"]), float(t["range"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Урон: %d | Дальность: %.0f" % [int(found_tower["damage"]), float(found_tower["range"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
+			else:
+				selected_unit.clear()
 
 		"base":
-			draw_string(ThemeDB.fallback_font, Vector2(25, y), "База команды %d" % (idx + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[idx])
-			y += 25
-			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(teams[idx]["hp"]), int(teams[idx]["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
-			y += 22
-			draw_string(ThemeDB.fallback_font, Vector2(25, y), "Уровень базы: %d" % int(teams[idx]["base_level"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+			var idx: int = int(selected_unit["index"])
+			if idx >= 0 and idx < 4 and bool(teams[idx]["alive"]):
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "База команды %d" % (idx + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 17, team_colors[idx])
+				y += 25
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Здоровье: %d/%d" % [int(teams[idx]["hp"]), int(teams[idx]["max_hp"])], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+				y += 22
+				draw_string(ThemeDB.fallback_font, Vector2(25, y), "Уровень базы: %d" % int(teams[idx]["base_level"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+			else:
+				selected_unit.clear()
 
 
 func _draw_hero_selection() -> void:
@@ -1315,7 +1281,7 @@ func _draw_hero_selection() -> void:
 
 
 func _draw_shop_menu() -> void:
-	draw_rect(Rect2(Vector2.ZERO, MAP_SIZE), Color(0.0, 0.0, 0.0, 0.65))
+	draw_rect(Rect2(Vector2.ZERO, MAP_SIZE), Color(0.0, 0.0, 0.65))
 	draw_rect(shop_rect, Color(0.12, 0.14, 0.17))
 	draw_rect(shop_rect, Color(0.75, 0.61, 0.35), false, 4.0)
 
